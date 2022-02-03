@@ -1,0 +1,382 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "IoT Endpoint with static IPs"
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Domain name to use for the new IoT Endpoint with static IPs, without final dot.
+  Route53HostedZoneId:
+    Type: String
+    Description: Route53 HostedZoneId to create a new DNS record in.
+  CertificateArn:
+    Type: String
+    Description: The ARN of the certificate to use for the new IoT Endpoint. Leave empty to auto-create.
+
+#############################################################################
+Outputs:
+  ElasticIP1:
+    Description: Static IP address for IoT Endpoint at the new domain.
+    Value: !Ref ElasticIP1
+
+  ElasticIP2:
+    Description: Static IP address for IoT Endpoint at the new domain.
+    Value: !Ref ElasticIP2
+
+#############################################################################
+Conditions:
+  CreateCertificate: !Equals [!Ref CertificateArn, ""]
+
+Resources:
+  #############################################################################
+  # Basic network resources with VPC, Subnets, Route Tables, etc.
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.10.0/24
+
+  IGW:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+
+  SubnetPublic1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.10.10.0/28
+      VpcId: !Ref VPC
+      AvailabilityZone: !Join ["", [!Ref "AWS::Region", "a"]]
+
+  SubnetPublic2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.10.10.16/28
+      VpcId: !Ref VPC
+      AvailabilityZone: !Join ["", [!Ref "AWS::Region", "b"]]
+
+  SubnetPrivate1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.10.10.32/28
+      VpcId: !Ref VPC
+      AvailabilityZone: !Join ["", [!Ref "AWS::Region", "a"]]
+
+  SubnetPrivate2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.10.10.48/28
+      VpcId: !Ref VPC
+      AvailabilityZone: !Join ["", [!Ref "AWS::Region", "b"]]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+
+  SubnetPublic1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref SubnetPublic1
+
+  SubnetPublic2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref SubnetPublic2
+
+  SubnetPrivate1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref SubnetPrivate1
+
+  SubnetPrivate2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref SubnetPrivate2
+
+  #############################################################################
+  # IoT Domain Configuration and custom domain, certificate, DNS record
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: CreateCertificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref Route53HostedZoneId
+
+  IoTDomainConfiguration:
+    Type: AWS::IoT::DomainConfiguration
+    Properties:
+      DomainConfigurationName: StaticIPs-VPC-Endpoint-standalone
+      DomainName: !Ref DomainName
+      ServerCertificateArns:
+        - !If [CreateCertificate, !Ref Certificate, !Ref CertificateArn]
+
+  DNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt NLB.DNSName
+        HostedZoneId: !GetAtt NLB.CanonicalHostedZoneID
+
+  #############################################################################
+  # VPC Endpoint and Lambda-based custom resource to get private IP addresses
+
+  IoTVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.iot.data"
+      VpcId: !Ref VPC
+      SubnetIds:
+        - !Ref SubnetPrivate1
+        - !Ref SubnetPrivate2
+      SecurityGroupIds:
+        - !Ref IoTVPCEndpointSecurityGroup
+
+  # NLB does not support security groups, so allow ingress and egress traffic from anywhere (0.0.0.0/0)
+  IoTVPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow IoT Endpoint access from anywhere.
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - Description: Allow HTTPS from anywhere
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - Description: Allow HTTPS-Alt from anywhere
+          IpProtocol: tcp
+          FromPort: 8443
+          ToPort: 8443
+          CidrIp: 0.0.0.0/0
+        - Description: Allow MQTTS from anywhere
+          IpProtocol: tcp
+          FromPort: 8883
+          ToPort: 8883
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - Description: Allow HTTPS to anywhere
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - Description: Allow HTTPS-Alt to anywhere
+          IpProtocol: tcp
+          FromPort: 8443
+          ToPort: 8443
+          CidrIp: 0.0.0.0/0
+        - Description: Allow MQTTS to anywhere
+          IpProtocol: tcp
+          FromPort: 8883
+          ToPort: 8883
+          CidrIp: 0.0.0.0/0
+
+  VPCEndpointIPsLambdaFunction:
+    Type: AWS::Lambda::Function
+    DeletionPolicy: Delete
+    Properties:
+      Code:
+        ZipFile: |
+          import cfnresponse
+          import boto3
+          import json
+          def lambda_handler(event, context):
+              print('REQUEST RECEIVED:\n' + json.dumps(event))
+              responseStatus = cfnresponse.FAILED
+              responseData = {}
+              if 'RequestType' not in event:
+                  responseData = {'error': 'RequestType not in event'}
+              elif event['RequestType'] == 'Delete':
+                  responseStatus = cfnresponse.SUCCESS
+              elif event['RequestType'] in ['Create', 'Update']:
+                  try:
+                      responseData['IPs'] = []
+                      ec2 = boto3.resource('ec2')
+                      eni_ids = event['ResourceProperties']['NetworkInterfaceIds']
+                      for eni_id in eni_ids:
+                          eni = ec2.NetworkInterface(eni_id)
+                          responseData['IPs'].append(eni.private_ip_address)
+                      responseStatus = cfnresponse.SUCCESS
+                  except Exception as e:
+                      responseData = {'error': str(e)}
+              cfnresponse.send(event, context, responseStatus, responseData)
+      Handler: index.lambda_handler
+      Role: !GetAtt VPCEndpointIPsLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 10
+
+  VPCEndpointIPsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  VPCEndpointIPsLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: VPCEndpointIPsLambdaPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeNetworkInterfaceAttribute
+            Resource: "*" # we need to list all ENIs to retrieve the associated private IP addresses
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-*"
+      Roles:
+        - !Ref VPCEndpointIPsLambdaRole
+
+  IoTVPCEndpointIPs:
+    Type: Custom::VPCEndpointIPs
+    Properties:
+      ServiceToken: !GetAtt VPCEndpointIPsLambdaFunction.Arn
+      NetworkInterfaceIds: !GetAtt IoTVPCEndpoint.NetworkInterfaceIds
+
+  #############################################################################
+  # Network Load Balancer, Listeners, and Target Groups
+
+  ElasticIP1:
+    Type: AWS::EC2::EIP
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Domain: vpc
+
+  ElasticIP2:
+    Type: AWS::EC2::EIP
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Domain: vpc
+
+  NLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: network
+      SubnetMappings:
+        - AllocationId: !GetAtt ElasticIP1.AllocationId
+          SubnetId: !Ref SubnetPublic1
+        - AllocationId: !GetAtt ElasticIP2.AllocationId
+          SubnetId: !Ref SubnetPublic2
+
+  HTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NLB
+      Port: 443
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPSTargetGroup
+
+  HTTPSAltListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NLB
+      Port: 8443
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref HTTPSAltTargetGroup
+
+  MQTTSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NLB
+      Port: 8883
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MQTTSTargetGroup
+
+  HTTPSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: IoTVPCEndpointHTTPS
+      Protocol: TCP
+      Port: 443
+      TargetType: ip
+      VpcId: !Ref VPC
+      Targets:
+        - Id: !Select [0, !GetAtt IoTVPCEndpointIPs.IPs]
+        - Id: !Select [1, !GetAtt IoTVPCEndpointIPs.IPs]
+      TargetGroupAttributes:
+        - Key: stickiness.enabled
+          Value: true
+        - Key: stickiness.type
+          Value: source_ip
+
+  HTTPSAltTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: IoTVPCEndpointHTTPSAlt
+      Protocol: TCP
+      Port: 8443
+      TargetType: ip
+      VpcId: !Ref VPC
+      Targets:
+        - Id: !Select [0, !GetAtt IoTVPCEndpointIPs.IPs]
+        - Id: !Select [1, !GetAtt IoTVPCEndpointIPs.IPs]
+      TargetGroupAttributes:
+        - Key: stickiness.enabled
+          Value: true
+        - Key: stickiness.type
+          Value: source_ip
+
+  MQTTSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: IoTVPCEndpointMQTTS
+      Protocol: TCP
+      Port: 8883
+      TargetType: ip
+      VpcId: !Ref VPC
+      Targets:
+        - Id: !Select [0, !GetAtt IoTVPCEndpointIPs.IPs]
+        - Id: !Select [1, !GetAtt IoTVPCEndpointIPs.IPs]
+      TargetGroupAttributes:
+        - Key: stickiness.enabled
+          Value: true
+        - Key: stickiness.type
+          Value: source_ip

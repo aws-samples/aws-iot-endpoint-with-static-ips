@@ -1,0 +1,11 @@
+{
+  "name": "aws-iot-endpoint-with-static-ips",
+  "version": "0.1.0",
+  "dependencies": {
+    "@types/node": "16.11.19",
+    "typescript": "~3.9.7",
+    "ts-node": "^9.0.0",
+    "aws-cdk": "2.10.0",
+    "aws-cdk-lib": "2.10.0"
+  }
+}
