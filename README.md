@@ -8,6 +8,10 @@ domain name.
 
 Please refer to [this blog post](https://aws.amazon.com/blogs/iot/creating-static-ip-addresses-and-custom-domains-for-aws-iot-core-endpoints/) for an architecture overview and walk-through.
 
+## GovCloud Deployments
+
+IoT configurable endpoints (as used in this solution) are not supported in [GovCloud Regions](https://docs.aws.amazon.com/iot/latest/developerguide/iot-custom-endpoints-configurable.html)
+
 ## Security
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more
 information.
