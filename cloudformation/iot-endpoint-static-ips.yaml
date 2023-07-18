@@ -11,6 +11,9 @@ Parameters:
   CertificateArn:
     Type: String
     Description: The ARN of the certificate to use for the new IoT Endpoint. Leave empty to auto-create.
+  AvailabilityZones:
+    Type: List<AWS::EC2::AvailabilityZone::Name>
+    Description: "AZ names to define location for VPC Endpoints, at least two required, can be used if auto-select AZ does not offer VPCE. Example: us-east-1b,us-east-1c"
 
 #############################################################################
 Outputs:
@@ -26,6 +29,7 @@ Outputs:
 Conditions:
   CreateCertificate: !Equals [!Ref CertificateArn, ""]
 
+#############################################################################
 Resources:
   #############################################################################
   # Basic network resources with VPC, Subnets, Route Tables, etc.
@@ -49,28 +53,28 @@ Resources:
     Properties:
       CidrBlock: 10.10.10.0/28
       VpcId: !Ref VPC
-      AvailabilityZone: !Join ["", [!Ref "AWS::Region", "a"]]
+      AvailabilityZone: !Select [0, !Ref AvailabilityZones]
 
   SubnetPublic2:
     Type: AWS::EC2::Subnet
     Properties:
       CidrBlock: 10.10.10.16/28
       VpcId: !Ref VPC
-      AvailabilityZone: !Join ["", [!Ref "AWS::Region", "b"]]
+      AvailabilityZone: !Select [1, !Ref AvailabilityZones]
 
   SubnetPrivate1:
     Type: AWS::EC2::Subnet
     Properties:
       CidrBlock: 10.10.10.32/28
       VpcId: !Ref VPC
-      AvailabilityZone: !Join ["", [!Ref "AWS::Region", "a"]]
+      AvailabilityZone: !Select [0, !Ref AvailabilityZones]
 
   SubnetPrivate2:
     Type: AWS::EC2::Subnet
     Properties:
       CidrBlock: 10.10.10.48/28
       VpcId: !Ref VPC
-      AvailabilityZone: !Join ["", [!Ref "AWS::Region", "b"]]
+      AvailabilityZone: !Select [1, !Ref AvailabilityZones]
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
